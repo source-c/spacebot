@@ -1210,7 +1210,29 @@ fn format_user_message(raw_text: &str, message: &InboundMessage) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or(&message.sender_id);
 
-    format!("[{display_name}]: {raw_text}")
+    let bot_tag = if message.metadata.get("sender_is_bot").and_then(|v| v.as_bool()).unwrap_or(false) {
+        " (bot)"
+    } else {
+        ""
+    };
+
+    let reply_context = message.metadata
+        .get("reply_to_author")
+        .and_then(|v| v.as_str())
+        .map(|author| {
+            let content_preview = message.metadata
+                .get("reply_to_content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if content_preview.is_empty() {
+                format!(" (replying to {author})")
+            } else {
+                format!(" (replying to {author}: \"{content_preview}\")")
+            }
+        })
+        .unwrap_or_default();
+
+    format!("[{display_name}]{bot_tag}{reply_context}: {raw_text}")
 }
 
 /// Check if a ProcessEvent is targeted at a specific channel.

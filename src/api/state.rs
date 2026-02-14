@@ -2,9 +2,12 @@
 
 use crate::agent::cortex_chat::CortexChatSession;
 use crate::agent::status::StatusBlock;
+use crate::config::DiscordPermissions;
+use crate::cron::{CronStore, Scheduler};
 use crate::memory::MemorySearch;
 use crate::{ProcessEvent, ProcessId};
 
+use arc_swap::ArcSwap;
 use serde::Serialize;
 
 use std::collections::HashMap;
@@ -42,6 +45,12 @@ pub struct ApiState {
     pub agent_workspaces: arc_swap::ArcSwap<HashMap<String, PathBuf>>,
     /// Path to the instance config.toml file.
     pub config_path: RwLock<PathBuf>,
+    /// Per-agent cron stores for cron job CRUD operations.
+    pub cron_stores: arc_swap::ArcSwap<HashMap<String, Arc<CronStore>>>,
+    /// Per-agent cron schedulers for job timer management.
+    pub cron_schedulers: arc_swap::ArcSwap<HashMap<String, Arc<Scheduler>>>,
+    /// Shared reference to the Discord permissions ArcSwap (same instance used by the adapter and file watcher).
+    pub discord_permissions: RwLock<Option<Arc<ArcSwap<DiscordPermissions>>>>,
 }
 
 /// Events sent to SSE clients. Wraps ProcessEvents with agent context.
@@ -133,6 +142,9 @@ impl ApiState {
             cortex_chat_sessions: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             agent_workspaces: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             config_path: RwLock::new(PathBuf::new()),
+            cron_stores: arc_swap::ArcSwap::from_pointee(HashMap::new()),
+            cron_schedulers: arc_swap::ArcSwap::from_pointee(HashMap::new()),
+            discord_permissions: RwLock::new(None),
         }
     }
 
@@ -271,6 +283,21 @@ impl ApiState {
     pub async fn set_config_path(&self, path: PathBuf) {
         let mut guard = self.config_path.write().await;
         *guard = path;
+    }
+
+    /// Set the cron stores for all agents.
+    pub fn set_cron_stores(&self, stores: HashMap<String, Arc<CronStore>>) {
+        self.cron_stores.store(Arc::new(stores));
+    }
+
+    /// Set the cron schedulers for all agents.
+    pub fn set_cron_schedulers(&self, schedulers: HashMap<String, Arc<Scheduler>>) {
+        self.cron_schedulers.store(Arc::new(schedulers));
+    }
+
+    /// Share the Discord permissions ArcSwap with the API so reads get hot-reloaded values.
+    pub async fn set_discord_permissions(&self, permissions: Arc<ArcSwap<DiscordPermissions>>) {
+        *self.discord_permissions.write().await = Some(permissions);
     }
 }
 

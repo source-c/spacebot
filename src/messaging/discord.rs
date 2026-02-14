@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serenity::all::{
     ChannelId, ChannelType, Context, CreateAttachment, CreateMessage, CreateThread, EditMessage,
     EventHandler, GatewayIntents, GetMessages, Http, Message, MessageId, Ready, ReactionType,
-    ShardManager, UserId,
+    ShardManager, User, UserId,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -327,9 +327,24 @@ impl Messaging for DiscordAdapter {
                 let is_bot = bot_user_id
                     .map(|bot_id| message.author.id == bot_id)
                     .unwrap_or(false);
+
+                let resolved_content = resolve_mentions(&message.content, &message.mentions);
+
+                let display_name = message.author.global_name.as_deref()
+                    .unwrap_or(&message.author.name);
+
+                // Include reply-to attribution if this message is a reply
+                let author = if let Some(referenced) = &message.referenced_message {
+                    let reply_author = referenced.author.global_name.as_deref()
+                        .unwrap_or(&referenced.author.name);
+                    format!("{display_name} (replying to {reply_author})")
+                } else {
+                    display_name.to_string()
+                };
+
                 HistoryMessage {
-                    author: message.author.name.clone(),
-                    content: message.content.clone(),
+                    author,
+                    content: resolved_content,
                     is_bot,
                 }
             })
@@ -384,12 +399,20 @@ impl EventHandler for Handler {
     }
 
     async fn message(&self, ctx: Context, message: Message) {
-        if message.author.bot {
+        // Always ignore our own messages to prevent self-response loops
+        let bot_user_id = self.bot_user_id_slot.read().await;
+        if bot_user_id.is_some_and(|id| message.author.id == id) {
             return;
         }
+        drop(bot_user_id);
 
         // Load a snapshot of the current permissions (hot-reloadable)
         let permissions = self.permissions.load();
+
+        // Filter other bots unless explicitly allowed
+        if message.author.bot && !permissions.allow_bot_messages {
+            return;
+        }
 
         // DM filter: if no guild_id, it's a DM — only allow listed users
         if message.guild_id.is_none() {
@@ -461,8 +484,10 @@ fn build_conversation_id(message: &Message) -> String {
 }
 
 fn extract_content(message: &Message) -> MessageContent {
+    let resolved_content = resolve_mentions(&message.content, &message.mentions);
+
     if message.attachments.is_empty() {
-        MessageContent::Text(message.content.clone())
+        MessageContent::Text(resolved_content)
     } else {
         let attachments = message
             .attachments
@@ -476,14 +501,31 @@ fn extract_content(message: &Message) -> MessageContent {
             .collect();
 
         MessageContent::Media {
-            text: if message.content.is_empty() {
+            text: if resolved_content.is_empty() {
                 None
             } else {
-                Some(message.content.clone())
+                Some(resolved_content)
             },
             attachments,
         }
     }
+}
+
+/// Replace raw Discord mention syntax (`<@ID>` and `<@!ID>`) with readable display names.
+/// Serenity provides resolved `User` objects in `message.mentions` for every mention in the text.
+fn resolve_mentions(content: &str, mentions: &[User]) -> String {
+    let mut resolved = content.to_string();
+    for user in mentions {
+        let display_name = user.global_name.as_deref().unwrap_or(&user.name);
+
+        let mention_pattern = format!("<@{}>", user.id);
+        resolved = resolved.replace(&mention_pattern, &format!("@{display_name}"));
+
+        // Legacy nickname mention format
+        let nick_pattern = format!("<@!{}>", user.id);
+        resolved = resolved.replace(&nick_pattern, &format!("@{display_name}"));
+    }
+    resolved
 }
 
 async fn build_metadata(ctx: &Context, message: &Message) -> HashMap<String, serde_json::Value> {
@@ -507,6 +549,9 @@ async fn build_metadata(ctx: &Context, message: &Message) -> HashMap<String, ser
     };
     metadata.insert("sender_display_name".into(), display_name.into());
     metadata.insert("sender_id".into(), message.author.id.get().into());
+    if message.author.bot {
+        metadata.insert("sender_is_bot".into(), true.into());
+    }
 
     if let Some(guild_id) = message.guild_id {
         metadata.insert("discord_guild_id".into(), guild_id.get().into());
@@ -530,6 +575,23 @@ async fn build_metadata(ctx: &Context, message: &Message) -> HashMap<String, ser
                 }
             }
         }
+    }
+
+    // Reply-to context: resolve the referenced message's author and content
+    if let Some(referenced) = &message.referenced_message {
+        let reply_author = referenced.author.global_name.as_deref()
+            .unwrap_or(&referenced.author.name);
+        metadata.insert("reply_to_author".into(), reply_author.into());
+        metadata.insert("reply_to_is_bot".into(), referenced.author.bot.into());
+
+        let reply_content = resolve_mentions(&referenced.content, &referenced.mentions);
+        // Truncate to avoid bloating context with long quoted messages
+        let truncated = if reply_content.len() > 200 {
+            format!("{}...", &reply_content[..200])
+        } else {
+            reply_content
+        };
+        metadata.insert("reply_to_content".into(), truncated.into());
     }
 
     metadata

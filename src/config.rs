@@ -556,6 +556,8 @@ pub struct DiscordConfig {
     pub token: String,
     /// User IDs allowed to DM the bot. If empty, DMs are ignored entirely.
     pub dm_allowed_users: Vec<String>,
+    /// Whether to process messages from other bots (self-messages are always ignored).
+    pub allow_bot_messages: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -577,6 +579,7 @@ pub struct DiscordPermissions {
     pub guild_filter: Option<Vec<u64>>,
     pub channel_filter: std::collections::HashMap<u64, Vec<u64>>,
     pub dm_allowed_users: Vec<u64>,
+    pub allow_bot_messages: bool,
 }
 
 /// Hot-reloadable Slack permission filters.
@@ -694,6 +697,7 @@ impl DiscordPermissions {
             guild_filter,
             channel_filter,
             dm_allowed_users,
+            allow_bot_messages: discord.allow_bot_messages,
         }
     }
 }
@@ -904,6 +908,8 @@ struct TomlDiscordConfig {
     token: Option<String>,
     #[serde(default)]
     dm_allowed_users: Vec<String>,
+    #[serde(default)]
+    allow_bot_messages: bool,
 }
 
 #[derive(Deserialize)]
@@ -1359,6 +1365,7 @@ impl Config {
                     enabled: d.enabled,
                     token,
                     dm_allowed_users: d.dm_allowed_users,
+                    allow_bot_messages: d.allow_bot_messages,
                 })
             }),
             slack: toml.messaging.slack.and_then(|s| {

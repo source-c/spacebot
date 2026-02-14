@@ -282,6 +282,90 @@ impl Scheduler {
             tracing::debug!(cron_id = %id, "cron timer stopped");
         }
     }
+
+    /// Unregister and stop a cron job.
+    pub async fn unregister(&self, job_id: &str) {
+        // Remove the timer handle and abort it
+        let handle = {
+            let mut timers = self.timers.write().await;
+            timers.remove(job_id)
+        };
+
+        if let Some(handle) = handle {
+            handle.abort();
+            let _ = handle.await;
+            tracing::debug!(cron_id = %job_id, "cron timer stopped");
+        }
+
+        // Remove the job from the jobs map
+        let removed = {
+            let mut jobs = self.jobs.write().await;
+            jobs.remove(job_id).is_some()
+        };
+
+        if removed {
+            tracing::info!(cron_id = %job_id, "cron job unregistered");
+        }
+    }
+
+    /// Check if a job is currently registered.
+    pub async fn is_registered(&self, job_id: &str) -> bool {
+        let jobs = self.jobs.read().await;
+        jobs.contains_key(job_id)
+    }
+
+    /// Trigger a cron job immediately, outside the timer loop.
+    pub async fn trigger_now(&self, job_id: &str) -> Result<()> {
+        let job = {
+            let jobs = self.jobs.read().await;
+            jobs.get(job_id).cloned()
+        };
+
+        if let Some(job) = job {
+            if !job.enabled {
+                return Err(crate::error::Error::Other(
+                    anyhow::anyhow!("cron job is disabled"),
+                ));
+            }
+
+            tracing::info!(cron_id = %job_id, "cron job triggered manually");
+            run_cron_job(&job, &self.context).await
+        } else {
+            Err(crate::error::Error::Other(anyhow::anyhow!(
+                "cron job not found"
+            )))
+        }
+    }
+
+    /// Update a job's enabled state and manage its timer accordingly.
+    pub async fn set_enabled(&self, job_id: &str, enabled: bool) -> Result<()> {
+        let was_enabled = {
+            let mut jobs = self.jobs.write().await;
+            if let Some(job) = jobs.get_mut(job_id) {
+                let old = job.enabled;
+                job.enabled = enabled;
+                old
+            } else {
+                return Err(crate::error::Error::Other(anyhow::anyhow!(
+                    "cron job not found"
+                )));
+            }
+        };
+
+        // If enabling and wasn't enabled before, start the timer
+        if enabled && !was_enabled {
+            self.start_timer(job_id).await;
+            tracing::info!(cron_id = %job_id, "cron job enabled and timer started");
+        }
+
+        // If disabling, the timer loop will detect this and stop naturally
+        // (see the check at line 183 in start_timer)
+        if !enabled && was_enabled {
+            tracing::info!(cron_id = %job_id, "cron job disabled, timer will stop on next tick");
+        }
+
+        Ok(())
+    }
 }
 
 /// Execute a single cron job: create a fresh channel, run the prompt, deliver the result.

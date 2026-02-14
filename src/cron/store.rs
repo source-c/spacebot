@@ -133,6 +133,148 @@ impl CronStore {
 
         Ok(())
     }
+
+    /// Load all cron job configurations (including disabled).
+    pub async fn load_all_unfiltered(&self) -> Result<Vec<CronConfig>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, prompt, interval_secs, delivery_target, active_start_hour, active_end_hour, enabled
+            FROM cron_jobs
+            ORDER BY created_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load cron jobs")?;
+
+        let configs = rows
+            .into_iter()
+            .map(|row| CronConfig {
+                id: row.try_get("id").unwrap_or_default(),
+                prompt: row.try_get("prompt").unwrap_or_default(),
+                interval_secs: row.try_get::<i64, _>("interval_secs").unwrap_or(3600) as u64,
+                delivery_target: row.try_get("delivery_target").unwrap_or_default(),
+                active_hours: {
+                    let start: Option<i64> = row.try_get("active_start_hour").ok();
+                    let end: Option<i64> = row.try_get("active_end_hour").ok();
+                    match (start, end) {
+                        (Some(s), Some(e)) => Some((s as u8, e as u8)),
+                        _ => None,
+                    }
+                },
+                enabled: row.try_get::<i64, _>("enabled").unwrap_or(1) != 0,
+            })
+            .collect();
+
+        Ok(configs)
+    }
+
+    /// Load execution history for a specific cron job.
+    pub async fn load_executions(&self, cron_id: &str, limit: i64) -> Result<Vec<CronExecutionEntry>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, executed_at, success, result_summary
+            FROM cron_executions
+            WHERE cron_id = ?
+            ORDER BY executed_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(cron_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load cron executions")?;
+
+        let entries = rows
+            .into_iter()
+            .map(|row| CronExecutionEntry {
+                id: row.try_get("id").unwrap_or_default(),
+                executed_at: row.try_get("executed_at").unwrap_or_default(),
+                success: row.try_get::<i64, _>("success").unwrap_or(0) != 0,
+                result_summary: row.try_get("result_summary").ok(),
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Load recent execution history across all cron jobs.
+    pub async fn load_all_executions(&self, limit: i64) -> Result<Vec<CronExecutionEntry>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, cron_id, executed_at, success, result_summary
+            FROM cron_executions
+            ORDER BY executed_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load cron executions")?;
+
+        let entries = rows
+            .into_iter()
+            .map(|row| CronExecutionEntry {
+                id: row.try_get("id").unwrap_or_default(),
+                executed_at: row.try_get("executed_at").unwrap_or_default(),
+                success: row.try_get::<i64, _>("success").unwrap_or(0) != 0,
+                result_summary: row.try_get("result_summary").ok(),
+            })
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Get execution stats for a cron job (success count, failure count, last execution).
+    pub async fn get_execution_stats(&self, cron_id: &str) -> Result<CronExecutionStats> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+                SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count,
+                MAX(executed_at) as last_executed_at
+            FROM cron_executions
+            WHERE cron_id = ?
+            "#,
+        )
+        .bind(cron_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("failed to load cron execution stats")?;
+
+        if let Some(row) = row {
+            let success_count: i64 = row.try_get("success_count").unwrap_or(0);
+            let failure_count: i64 = row.try_get("failure_count").unwrap_or(0);
+            let last_executed_at: Option<String> = row.try_get("last_executed_at").ok();
+
+            Ok(CronExecutionStats {
+                success_count: success_count as u64,
+                failure_count: failure_count as u64,
+                last_executed_at,
+            })
+        } else {
+            Ok(CronExecutionStats::default())
+        }
+    }
+}
+
+/// Entry in the cron execution log.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CronExecutionEntry {
+    pub id: String,
+    pub executed_at: String,
+    pub success: bool,
+    pub result_summary: Option<String>,
+}
+
+/// Execution statistics for a cron job.
+#[derive(Debug, Clone, serde::Serialize, Default)]
+pub struct CronExecutionStats {
+    pub success_count: u64,
+    pub failure_count: u64,
+    pub last_executed_at: Option<String>,
 }
 
 use sqlx::Row as _;

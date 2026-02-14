@@ -428,6 +428,11 @@ export interface BrowserSection {
 	evaluate_enabled: boolean;
 }
 
+export interface DiscordSection {
+	enabled: boolean;
+	allow_bot_messages: boolean;
+}
+
 export interface AgentConfigResponse {
 	routing: RoutingSection;
 	tuning: TuningSection;
@@ -436,6 +441,7 @@ export interface AgentConfigResponse {
 	coalesce: CoalesceSection;
 	memory_persistence: MemoryPersistenceSection;
 	browser: BrowserSection;
+	discord: DiscordSection;
 }
 
 // Partial update types - all fields are optional
@@ -491,6 +497,10 @@ export interface BrowserUpdate {
 	evaluate_enabled?: boolean;
 }
 
+export interface DiscordUpdate {
+	allow_bot_messages?: boolean;
+}
+
 export interface AgentConfigUpdateRequest {
 	agent_id: string;
 	routing?: RoutingUpdate;
@@ -500,6 +510,56 @@ export interface AgentConfigUpdateRequest {
 	coalesce?: CoalesceUpdate;
 	memory_persistence?: MemoryPersistenceUpdate;
 	browser?: BrowserUpdate;
+	discord?: DiscordUpdate;
+}
+
+// -- Cron Types --
+
+export interface CronJobWithStats {
+	id: string;
+	prompt: string;
+	interval_secs: number;
+	delivery_target: string;
+	enabled: boolean;
+	active_hours: [number, number] | null;
+	success_count: number;
+	failure_count: number;
+	last_executed_at: string | null;
+}
+
+export interface CronExecutionEntry {
+	id: string;
+	executed_at: string;
+	success: boolean;
+	result_summary: string | null;
+}
+
+export interface CronListResponse {
+	jobs: CronJobWithStats[];
+}
+
+export interface CronExecutionsResponse {
+	executions: CronExecutionEntry[];
+}
+
+export interface CronActionResponse {
+	success: boolean;
+	message: string;
+}
+
+export interface CreateCronRequest {
+	id: string;
+	prompt: string;
+	interval_secs: number;
+	delivery_target: string;
+	active_start_hour?: number;
+	active_end_hour?: number;
+	enabled: boolean;
+}
+
+export interface CronExecutionsParams {
+	cron_id?: string;
+	limit?: number;
 }
 
 export const api = {
@@ -578,5 +638,64 @@ export const api = {
 		}
 		return response.json() as Promise<AgentConfigResponse>;
 	},
+
+	// Cron API
+	listCronJobs: (agentId: string) =>
+		fetchJson<CronListResponse>(`/agents/cron?agent_id=${encodeURIComponent(agentId)}`),
+
+	cronExecutions: (agentId: string, params: CronExecutionsParams = {}) => {
+		const search = new URLSearchParams({ agent_id: agentId });
+		if (params.cron_id) search.set("cron_id", params.cron_id);
+		if (params.limit) search.set("limit", String(params.limit));
+		return fetchJson<CronExecutionsResponse>(`/agents/cron/executions?${search}`);
+	},
+
+	createCronJob: async (agentId: string, request: CreateCronRequest) => {
+		const response = await fetch(`${API_BASE}/agents/cron`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ...request, agent_id: agentId }),
+		});
+		if (!response.ok) {
+			throw new Error(`API error: ${response.status}`);
+		}
+		return response.json() as Promise<CronActionResponse>;
+	},
+
+	deleteCronJob: async (agentId: string, cronId: string) => {
+		const search = new URLSearchParams({ agent_id: agentId, cron_id: cronId });
+		const response = await fetch(`${API_BASE}/agents/cron?${search}`, {
+			method: "DELETE",
+		});
+		if (!response.ok) {
+			throw new Error(`API error: ${response.status}`);
+		}
+		return response.json() as Promise<CronActionResponse>;
+	},
+
+	toggleCronJob: async (agentId: string, cronId: string, enabled: boolean) => {
+		const response = await fetch(`${API_BASE}/agents/cron/toggle`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ agent_id: agentId, cron_id: cronId, enabled }),
+		});
+		if (!response.ok) {
+			throw new Error(`API error: ${response.status}`);
+		}
+		return response.json() as Promise<CronActionResponse>;
+	},
+
+	triggerCronJob: async (agentId: string, cronId: string) => {
+		const response = await fetch(`${API_BASE}/agents/cron/trigger`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ agent_id: agentId, cron_id: cronId }),
+		});
+		if (!response.ok) {
+			throw new Error(`API error: ${response.status}`);
+		}
+		return response.json() as Promise<CronActionResponse>;
+	},
+
 	eventsUrl: `${API_BASE}/events`,
 };

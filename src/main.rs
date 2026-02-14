@@ -428,6 +428,9 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
         let perms = spacebot::config::DiscordPermissions::from_config(discord_config, &config.bindings);
         Arc::new(ArcSwap::from_pointee(perms))
     });
+    if let Some(ref perms) = discord_permissions {
+        api_state.set_discord_permissions(perms.clone()).await;
+    }
 
     if let Some(discord_config) = &config.messaging.discord {
         if discord_config.enabled {
@@ -467,7 +470,10 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
     tracing::info!("messaging adapters started");
 
     // Initialize cron schedulers for each agent
-    let mut cron_schedulers = Vec::new();
+    let mut cron_schedulers_for_shutdown = Vec::new();
+    let mut cron_stores_map = std::collections::HashMap::new();
+    let mut cron_schedulers_map = std::collections::HashMap::new();
+
     for (agent_id, agent) in &mut agents {
         let store = Arc::new(spacebot::cron::CronStore::new(agent.db.sqlite.clone()));
 
@@ -519,12 +525,19 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
         }
 
         // Store cron tool on deps so each channel can register it on its own tool server
-        let cron_tool = spacebot::tools::CronTool::new(store, scheduler.clone());
+        let cron_tool = spacebot::tools::CronTool::new(store.clone(), scheduler.clone());
         agent.deps.cron_tool = Some(cron_tool);
 
-        cron_schedulers.push(scheduler);
+        cron_stores_map.insert(agent_id.to_string(), store);
+        cron_schedulers_map.insert(agent_id.to_string(), scheduler.clone());
+        cron_schedulers_for_shutdown.push(scheduler);
         tracing::info!(agent_id = %agent_id, "cron scheduler started");
     }
+
+    // Set cron stores and schedulers on the API state
+    api_state.set_cron_stores(cron_stores_map);
+    api_state.set_cron_schedulers(cron_schedulers_map);
+    tracing::info!("cron stores and schedulers registered with API state");
 
     // Start memory ingestion loops for each agent
     let mut _ingestion_handles = Vec::new();
@@ -801,10 +814,10 @@ async fn run(config: spacebot::config::Config, foreground: bool) -> anyhow::Resu
     // Graceful shutdown
     drop(active_channels);
 
-    for scheduler in &cron_schedulers {
+    for scheduler in &cron_schedulers_for_shutdown {
         scheduler.shutdown().await;
     }
-    drop(cron_schedulers);
+    drop(cron_schedulers_for_shutdown);
 
     messaging_manager.shutdown().await;
 
