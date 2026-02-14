@@ -9,11 +9,12 @@ use crate::conversation::history::ProcessRunLogger;
 use crate::llm::SpacebotModel;
 use crate::{AgentDeps, ProcessType};
 
-use rig::agent::AgentBuilder;
-use rig::completion::{AssistantContent, CompletionModel, Prompt};
+use rig::agent::{AgentBuilder, HookAction, PromptHook, ToolCallHookAction};
+use rig::completion::{AssistantContent, CompletionModel, CompletionResponse, Message, Prompt};
 use rig::tool::server::ToolServerHandle;
 use serde::Serialize;
 use sqlx::SqlitePool;
+use tokio::sync::mpsc;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -43,6 +44,69 @@ pub enum CortexChatEvent {
     Done { full_text: String },
     /// An error occurred.
     Error { message: String },
+}
+
+/// Prompt hook that forwards tool events to an mpsc channel for SSE streaming.
+#[derive(Clone)]
+struct CortexChatHook {
+    event_tx: mpsc::UnboundedSender<CortexChatEvent>,
+}
+
+impl CortexChatHook {
+    fn new(event_tx: mpsc::UnboundedSender<CortexChatEvent>) -> Self {
+        Self { event_tx }
+    }
+
+    fn send(&self, event: CortexChatEvent) {
+        let _ = self.event_tx.send(event);
+    }
+}
+
+impl<M: CompletionModel> PromptHook<M> for CortexChatHook {
+    async fn on_tool_call(
+        &self,
+        tool_name: &str,
+        _tool_call_id: Option<String>,
+        _internal_call_id: &str,
+        _args: &str,
+    ) -> ToolCallHookAction {
+        self.send(CortexChatEvent::ToolStarted {
+            tool: tool_name.to_string(),
+        });
+        ToolCallHookAction::Continue
+    }
+
+    async fn on_tool_result(
+        &self,
+        tool_name: &str,
+        _tool_call_id: Option<String>,
+        _internal_call_id: &str,
+        _args: &str,
+        result: &str,
+    ) -> HookAction {
+        let preview = if result.len() > 200 {
+            format!("{}...", &result[..200])
+        } else {
+            result.to_string()
+        };
+        self.send(CortexChatEvent::ToolCompleted {
+            tool: tool_name.to_string(),
+            result_preview: preview,
+        });
+        HookAction::Continue
+    }
+
+    async fn on_completion_call(&self, _prompt: &Message, _history: &[Message]) -> HookAction {
+        HookAction::Continue
+    }
+
+    async fn on_completion_response(
+        &self,
+        _prompt: &Message,
+        _response: &CompletionResponse<M::Response>,
+    ) -> HookAction {
+        HookAction::Continue
+    }
 }
 
 /// SQLite CRUD for cortex chat messages.
@@ -155,19 +219,17 @@ impl CortexChatSession {
         }
     }
 
-    /// Send a message to the cortex chat and get the response.
+    /// Send a message and stream events (tool calls, completion) back via an mpsc channel.
     ///
-    /// This is the non-streaming version. The caller wraps this in SSE by
-    /// sending `thinking` -> running the call -> sending `done` / `error`.
-    ///
-    /// The channel_context_id is used to fetch recent channel history for
-    /// injection into the system prompt.
-    pub async fn send_message(
-        &self,
+    /// Returns a receiver that yields `CortexChatEvent` items as the agent works.
+    /// The agent runs in a spawned task so the caller can forward events to SSE
+    /// without blocking.
+    pub async fn send_message_with_events(
+        self: &Arc<Self>,
         thread_id: &str,
         user_text: &str,
         channel_context_id: Option<&str>,
-    ) -> Result<String, anyhow::Error> {
+    ) -> Result<mpsc::UnboundedReceiver<CortexChatEvent>, anyhow::Error> {
         let _guard = self.send_lock.lock().await;
 
         // Save the user message
@@ -181,7 +243,6 @@ impl CortexChatSession {
         // Load chat history and convert to Rig messages
         let chat_messages = self.store.load_history(thread_id, 100).await?;
         let mut history: Vec<rig::message::Message> = Vec::new();
-        // Exclude the last message (the one we just saved) since we'll pass it as the prompt
         for message in &chat_messages[..chat_messages.len().saturating_sub(1)] {
             match message.role.as_str() {
                 "user" => {
@@ -207,29 +268,46 @@ impl CortexChatSession {
             .tool_server_handle(self.tool_server.clone())
             .build();
 
-        // Run the agent
-        let result = agent
-            .prompt(user_text)
-            .with_history(&mut history)
-            .await;
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let hook = CortexChatHook::new(event_tx.clone());
 
-        match result {
-            Ok(response) => {
-                // Save the assistant response
-                self.store
-                    .save_message(thread_id, "assistant", &response, channel_context_id)
-                    .await?;
-                Ok(response)
+        // Clone what the spawned task needs
+        let user_text = user_text.to_string();
+        let thread_id = thread_id.to_string();
+        let channel_context_id = channel_context_id.map(|s| s.to_string());
+        let store = self.store.clone();
+
+        tokio::spawn(async move {
+            let channel_ref = channel_context_id.as_deref();
+
+            let result = agent
+                .prompt(&user_text)
+                .with_hook(hook)
+                .with_history(&mut history)
+                .await;
+
+            match result {
+                Ok(response) => {
+                    let _ = store
+                        .save_message(&thread_id, "assistant", &response, channel_ref)
+                        .await;
+                    let _ = event_tx.send(CortexChatEvent::Done {
+                        full_text: response,
+                    });
+                }
+                Err(error) => {
+                    let error_text = format!("Cortex chat error: {error}");
+                    let _ = store
+                        .save_message(&thread_id, "assistant", &error_text, channel_ref)
+                        .await;
+                    let _ = event_tx.send(CortexChatEvent::Error {
+                        message: error_text,
+                    });
+                }
             }
-            Err(error) => {
-                let error_text = format!("Cortex chat error: {error}");
-                // Save error as assistant message so history stays consistent
-                self.store
-                    .save_message(thread_id, "assistant", &error_text, channel_context_id)
-                    .await?;
-                Err(anyhow::anyhow!(error_text))
-            }
-        }
+        });
+
+        Ok(event_rx)
     }
 
     async fn build_system_prompt(&self, channel_context_id: Option<&str>) -> String {

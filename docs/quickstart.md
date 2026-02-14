@@ -2,16 +2,31 @@
 
 Get Spacebot running locally in under 5 minutes.
 
-## Prerequisites
+## Docker (fastest)
+
+```bash
+docker run -d \
+  --name spacebot \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  -v spacebot-data:/data \
+  -p 19898:19898 \
+  ghcr.io/spacedriveapp/spacebot:latest
+```
+
+The web UI is available at `http://localhost:19898`. See [docker.md](docker.md) for image variants, compose files, and configuration options.
+
+## Build from source
+
+### Prerequisites
 
 - **Rust 1.85+** — `rustup update stable`
 - **Bun** (optional, for the web UI) — `curl -fsSL https://bun.sh/install | bash`
 - **An LLM API key** — Anthropic, OpenAI, or OpenRouter
 
-## Build from source
+### Install
 
 ```bash
-git clone https://github.com/jamiepine/spacebot.git
+git clone https://github.com/spacedriveapp/spacebot.git
 cd spacebot
 
 # Optional: build the web UI (React + Vite, embedded into the binary)
@@ -129,8 +144,8 @@ cd interface && bun run dev
 | -------- | --------- | ------------------------------------ |
 | Discord  | Supported | [discord-setup.md](discord-setup.md) |
 | Slack    | Supported | [slack-setup.md](slack-setup.md)     |
-| Webhook  | Planned   | —                                    |
-| Telegram | Planned   | —                                    |
+| Telegram | Supported | [telegram-setup.md](telegram-setup.md) |
+| Webhook  | Supported | [webhook.md](webhook.md)            |
 
 No messaging adapters are required. Without them, Spacebot is accessible via the web UI and HTTP API.
 
@@ -155,6 +170,7 @@ Start/restart options:
 
 ## Next steps
 
+- [Docker deployment](docker.md) — container setup and Docker Compose
 - [Config reference](config.md) — full config.toml documentation
 - [Model routing](routing.md) — per-process model selection and fallbacks
 - [Memory system](memory.md) — how memories are stored and recalled

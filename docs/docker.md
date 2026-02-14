@@ -10,7 +10,7 @@ docker run -d \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -v spacebot-data:/data \
   -p 19898:19898 \
-  ghcr.io/jamiepine/spacebot:slim
+  ghcr.io/spacedriveapp/spacebot:slim
 ```
 
 The web UI is available at `http://localhost:19898`.
@@ -64,7 +64,7 @@ docker run -d \
   -e DISCORD_BOT_TOKEN="..." \
   -v spacebot-data:/data \
   -p 19898:19898 \
-  ghcr.io/jamiepine/spacebot:slim
+  ghcr.io/spacedriveapp/spacebot:slim
 ```
 
 Available environment variables:
@@ -91,7 +91,7 @@ docker run -d \
   -v spacebot-data:/data \
   -v ./config.toml:/data/config.toml:ro \
   -p 19898:19898 \
-  ghcr.io/jamiepine/spacebot:slim
+  ghcr.io/spacedriveapp/spacebot:slim
 ```
 
 Config values can reference environment variables with `env:VAR_NAME`:
@@ -108,7 +108,7 @@ See [config.md](config.md) for the full config reference.
 ```yaml
 services:
   spacebot:
-    image: ghcr.io/jamiepine/spacebot:slim
+    image: ghcr.io/spacedriveapp/spacebot:slim
     container_name: spacebot
     restart: unless-stopped
     ports:
@@ -129,7 +129,7 @@ volumes:
 ```yaml
 services:
   spacebot:
-    image: ghcr.io/jamiepine/spacebot:full
+    image: ghcr.io/spacedriveapp/spacebot:full
     container_name: spacebot
     restart: unless-stopped
     ports:
@@ -197,13 +197,35 @@ healthcheck:
 - Graceful shutdown on `SIGTERM` (what `docker stop` sends). Drains active channels, closes database connections.
 - The PID file and Unix socket (used in daemon mode) are not created.
 
+## CI / Releases
+
+Images are built and pushed to `ghcr.io/spacedriveapp/spacebot` via GitHub Actions (`.github/workflows/release.yml`).
+
+**Triggers:**
+
+- Push a `v*` tag (e.g. `git tag v0.1.0 && git push --tags`)
+- Manual dispatch from the Actions tab
+
+**Tags pushed per release:**
+
+| Tag | Description |
+|-----|-------------|
+| `v0.1.0-slim` | Versioned slim |
+| `v0.1.0-full` | Versioned full |
+| `v0.1.0` | Versioned (points to full) |
+| `slim` | Rolling slim |
+| `full` | Rolling full |
+| `latest` | Rolling (points to full) |
+
+The `latest` tag always points to the `full` variant.
+
 ## Fly.io Deployment
 
-For hosted deployment on Fly.io, see the [spacebot-platform](https://github.com/jamiepine/spacebot-platform) project. The Docker image is designed to work with Fly Machines and Fly Volumes.
+For hosted deployment on Fly.io, see the [spacebot-platform](https://github.com/spacedriveapp/spacebot-platform) project. The Docker image is designed to work with Fly Machines and Fly Volumes.
 
 ```bash
 # Manual single-instance deploy
-fly launch --image ghcr.io/jamiepine/spacebot:slim
+fly launch --image ghcr.io/spacedriveapp/spacebot:slim
 fly volumes create spacebot_data --size 5
 fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
 fly deploy

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type CortexChatMessage } from "@/api/client";
 
+export interface ToolActivity {
+	tool: string;
+	status: "running" | "done";
+	result_preview?: string;
+}
+
 /** Parse SSE events from a ReadableStream response body. */
 async function consumeSSE(
 	response: Response,
@@ -46,6 +52,7 @@ export function useCortexChat(agentId: string, channelId?: string) {
 	const [threadId, setThreadId] = useState<string | null>(null);
 	const [isStreaming, setIsStreaming] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [toolActivity, setToolActivity] = useState<ToolActivity[]>([]);
 	const loadedRef = useRef(false);
 
 	// Load latest thread on mount
@@ -67,6 +74,7 @@ export function useCortexChat(agentId: string, channelId?: string) {
 
 		setError(null);
 		setIsStreaming(true);
+		setToolActivity([]);
 
 		// Optimistically add user message
 		const userMessage: CortexChatMessage = {
@@ -86,7 +94,26 @@ export function useCortexChat(agentId: string, channelId?: string) {
 			}
 
 			await consumeSSE(response, (eventType, data) => {
-				if (eventType === "done") {
+				if (eventType === "tool_started") {
+					try {
+						const parsed = JSON.parse(data);
+						setToolActivity((prev) => [
+							...prev,
+							{ tool: parsed.tool, status: "running" },
+						]);
+					} catch { /* ignore */ }
+				} else if (eventType === "tool_completed") {
+					try {
+						const parsed = JSON.parse(data);
+						setToolActivity((prev) =>
+							prev.map((t) =>
+								t.tool === parsed.tool && t.status === "running"
+									? { ...t, status: "done", result_preview: parsed.result_preview }
+									: t,
+							),
+						);
+					} catch { /* ignore */ }
+				} else if (eventType === "done") {
 					try {
 						const parsed = JSON.parse(data);
 						const assistantMessage: CortexChatMessage = {
@@ -114,6 +141,7 @@ export function useCortexChat(agentId: string, channelId?: string) {
 			setError(error instanceof Error ? error.message : "Request failed");
 		} finally {
 			setIsStreaming(false);
+			setToolActivity([]);
 		}
 	}, [agentId, channelId, threadId, isStreaming]);
 
@@ -121,7 +149,8 @@ export function useCortexChat(agentId: string, channelId?: string) {
 		setThreadId(generateThreadId());
 		setMessages([]);
 		setError(null);
+		setToolActivity([]);
 	}, []);
 
-	return { messages, threadId, isStreaming, error, sendMessage, newThread };
+	return { messages, threadId, isStreaming, error, toolActivity, sendMessage, newThread };
 }

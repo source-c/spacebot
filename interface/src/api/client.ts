@@ -322,6 +322,19 @@ export type CortexChatSSEEvent =
 	| { type: "done"; full_text: string }
 	| { type: "error"; message: string };
 
+export interface IdentityFiles {
+	soul: string | null;
+	identity: string | null;
+	user: string | null;
+}
+
+export interface IdentityUpdateRequest {
+	agent_id: string;
+	soul?: string | null;
+	identity?: string | null;
+	user?: string | null;
+}
+
 export const api = {
 	status: () => fetchJson<StatusResponse>("/status"),
 	agents: () => fetchJson<AgentsResponse>("/agents"),
@@ -368,5 +381,18 @@ export const api = {
 				channel_id: channelId ?? null,
 			}),
 		}),
+	agentIdentity: (agentId: string) =>
+		fetchJson<IdentityFiles>(`/agents/identity?agent_id=${encodeURIComponent(agentId)}`),
+	updateIdentity: async (request: IdentityUpdateRequest) => {
+		const response = await fetch(`${API_BASE}/agents/identity`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(request),
+		});
+		if (!response.ok) {
+			throw new Error(`API error: ${response.status}`);
+		}
+		return response.json() as Promise<IdentityFiles>;
+	},
 	eventsUrl: `${API_BASE}/events`,
 };

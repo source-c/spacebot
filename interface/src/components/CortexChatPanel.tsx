@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useCortexChat } from "@/hooks/useCortexChat";
+import { useCortexChat, type ToolActivity } from "@/hooks/useCortexChat";
 import { Markdown } from "@/components/Markdown";
 
 interface CortexChatPanelProps {
@@ -8,16 +8,43 @@ interface CortexChatPanelProps {
 	onClose?: () => void;
 }
 
+function ToolActivityIndicator({ activity }: { activity: ToolActivity[] }) {
+	if (activity.length === 0) return null;
+
+	return (
+		<div className="flex flex-col gap-1 px-3 py-2">
+			{activity.map((tool, index) => (
+				<div
+					key={`${tool.tool}-${index}`}
+					className="flex items-center gap-2 rounded bg-app-darkBox/40 px-2 py-1"
+				>
+					{tool.status === "running" ? (
+						<span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+					) : (
+						<span className="h-1.5 w-1.5 rounded-full bg-green-400" />
+					)}
+					<span className="font-mono text-tiny text-ink-faint">{tool.tool}</span>
+					{tool.status === "done" && tool.result_preview && (
+						<span className="min-w-0 flex-1 truncate text-tiny text-ink-faint/60">
+							{tool.result_preview.slice(0, 80)}
+						</span>
+					)}
+				</div>
+			))}
+		</div>
+	);
+}
+
 export function CortexChatPanel({ agentId, channelId, onClose }: CortexChatPanelProps) {
-	const { messages, isStreaming, error, sendMessage, newThread } = useCortexChat(agentId, channelId);
+	const { messages, isStreaming, error, toolActivity, sendMessage, newThread } = useCortexChat(agentId, channelId);
 	const [input, setInput] = useState("");
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
 
-	// Auto-scroll on new messages
+	// Auto-scroll on new messages or tool activity
 	useEffect(() => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [messages.length, isStreaming]);
+	}, [messages.length, isStreaming, toolActivity.length]);
 
 	// Focus input on mount
 	useEffect(() => {
@@ -103,12 +130,15 @@ export function CortexChatPanel({ agentId, channelId, onClose }: CortexChatPanel
 					{isStreaming && (
 						<div className="mr-2 rounded-md bg-app-darkBox/50 px-3 py-2">
 							<span className="text-tiny font-medium text-violet-400">cortex</span>
-							<div className="mt-1 flex items-center gap-1">
-								<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
-								<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.2s]" />
-								<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.4s]" />
-								<span className="ml-1 text-tiny text-ink-faint">thinking...</span>
-							</div>
+							<ToolActivityIndicator activity={toolActivity} />
+							{toolActivity.length === 0 && (
+								<div className="mt-1 flex items-center gap-1">
+									<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+									<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.2s]" />
+									<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400 [animation-delay:0.4s]" />
+									<span className="ml-1 text-tiny text-ink-faint">thinking...</span>
+								</div>
+							)}
 						</div>
 					)}
 					{error && (

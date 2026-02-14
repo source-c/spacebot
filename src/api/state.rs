@@ -38,6 +38,8 @@ pub struct ApiState {
     pub channel_status_blocks: RwLock<HashMap<String, Arc<tokio::sync::RwLock<StatusBlock>>>>,
     /// Per-agent cortex chat sessions.
     pub cortex_chat_sessions: arc_swap::ArcSwap<HashMap<String, Arc<CortexChatSession>>>,
+    /// Per-agent workspace paths for identity file access.
+    pub agent_workspaces: arc_swap::ArcSwap<HashMap<String, PathBuf>>,
 }
 
 /// Events sent to SSE clients. Wraps ProcessEvents with agent context.
@@ -127,6 +129,7 @@ impl ApiState {
             memory_searches: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             channel_status_blocks: RwLock::new(HashMap::new()),
             cortex_chat_sessions: arc_swap::ArcSwap::from_pointee(HashMap::new()),
+            agent_workspaces: arc_swap::ArcSwap::from_pointee(HashMap::new()),
         }
     }
 
@@ -254,6 +257,11 @@ impl ApiState {
     /// Set the cortex chat sessions for all agents.
     pub fn set_cortex_chat_sessions(&self, sessions: HashMap<String, Arc<CortexChatSession>>) {
         self.cortex_chat_sessions.store(Arc::new(sessions));
+    }
+
+    /// Set the workspace paths for all agents.
+    pub fn set_agent_workspaces(&self, workspaces: HashMap<String, PathBuf>) {
+        self.agent_workspaces.store(Arc::new(workspaces));
     }
 }
 

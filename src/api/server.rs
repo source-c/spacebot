@@ -11,7 +11,7 @@ use crate::memory::search::{SearchConfig, SearchMode, SearchSort};
 use axum::extract::{Query, State};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Json, Response, Sse};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use futures::stream::Stream;
 use rust_embed::Embed;
@@ -92,6 +92,26 @@ struct CortexChatMessagesResponse {
     thread_id: String,
 }
 
+#[derive(Serialize)]
+struct IdentityResponse {
+    soul: Option<String>,
+    identity: Option<String>,
+    user: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct IdentityQuery {
+    agent_id: String,
+}
+
+#[derive(Deserialize)]
+struct IdentityUpdateRequest {
+    agent_id: String,
+    soul: Option<String>,
+    identity: Option<String>,
+    user: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct CortexChatSendRequest {
     agent_id: String,
@@ -126,7 +146,8 @@ pub async fn start_http_server(
         .route("/agents/memories/search", get(search_memories))
         .route("/cortex/events", get(cortex_events))
         .route("/cortex-chat/messages", get(cortex_chat_messages))
-        .route("/cortex-chat/send", post(cortex_chat_send));
+        .route("/cortex-chat/send", post(cortex_chat_send))
+        .route("/agents/identity", get(get_identity).put(update_identity));
 
     let app = Router::new()
         .nest("/api", api_routes)
@@ -474,6 +495,8 @@ async fn cortex_chat_messages(
 ///
 /// The stream emits:
 /// - `thinking` — cortex is processing
+/// - `tool_started` — a tool call began
+/// - `tool_completed` — a tool call finished (with result preview)
 /// - `done` — full response text
 /// - `error` — if something went wrong
 async fn cortex_chat_send(
@@ -490,36 +513,105 @@ async fn cortex_chat_send(
     let message = request.message;
     let channel_id = request.channel_id;
 
+    // Start the agent and get an event receiver
+    let channel_ref = channel_id.as_deref();
+    let mut event_rx = session
+        .send_message_with_events(&thread_id, &message, channel_ref)
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "failed to start cortex chat send");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
     let stream = async_stream::stream! {
         // Send thinking event
         yield Ok(axum::response::sse::Event::default()
             .event("thinking")
             .data("{}"));
 
-        let channel_ref = channel_id.as_deref();
-        match session.send_message(&thread_id, &message, channel_ref).await {
-            Ok(response) => {
-                if let Ok(json) = serde_json::to_string(&CortexChatEvent::Done {
-                    full_text: response,
-                }) {
-                    yield Ok(axum::response::sse::Event::default()
-                        .event("done")
-                        .data(json));
-                }
-            }
-            Err(error) => {
-                if let Ok(json) = serde_json::to_string(&CortexChatEvent::Error {
-                    message: error.to_string(),
-                }) {
-                    yield Ok(axum::response::sse::Event::default()
-                        .event("error")
-                        .data(json));
-                }
+        // Forward events from the agent task
+        while let Some(event) = event_rx.recv().await {
+            let event_name = match &event {
+                CortexChatEvent::Thinking => "thinking",
+                CortexChatEvent::ToolStarted { .. } => "tool_started",
+                CortexChatEvent::ToolCompleted { .. } => "tool_completed",
+                CortexChatEvent::Done { .. } => "done",
+                CortexChatEvent::Error { .. } => "error",
+            };
+            if let Ok(json) = serde_json::to_string(&event) {
+                yield Ok(axum::response::sse::Event::default()
+                    .event(event_name)
+                    .data(json));
             }
         }
     };
 
     Ok(Sse::new(stream))
+}
+
+// -- Identity file handlers --
+
+/// Get identity files (SOUL.md, IDENTITY.md, USER.md) for an agent.
+async fn get_identity(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<IdentityQuery>,
+) -> Result<Json<IdentityResponse>, StatusCode> {
+    let workspaces = state.agent_workspaces.load();
+    let workspace = workspaces.get(&query.agent_id).ok_or(StatusCode::NOT_FOUND)?;
+
+    let identity = crate::identity::Identity::load(workspace).await;
+
+    Ok(Json(IdentityResponse {
+        soul: identity.soul,
+        identity: identity.identity,
+        user: identity.user,
+    }))
+}
+
+/// Update identity files for an agent. Only writes files for fields that are present.
+/// The file watcher will pick up changes and hot-reload identity into RuntimeConfig.
+async fn update_identity(
+    State(state): State<Arc<ApiState>>,
+    axum::Json(request): axum::Json<IdentityUpdateRequest>,
+) -> Result<Json<IdentityResponse>, StatusCode> {
+    let workspaces = state.agent_workspaces.load();
+    let workspace = workspaces.get(&request.agent_id).ok_or(StatusCode::NOT_FOUND)?;
+
+    if let Some(soul) = &request.soul {
+        tokio::fs::write(workspace.join("SOUL.md"), soul)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "failed to write SOUL.md");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    if let Some(identity) = &request.identity {
+        tokio::fs::write(workspace.join("IDENTITY.md"), identity)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "failed to write IDENTITY.md");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    if let Some(user) = &request.user {
+        tokio::fs::write(workspace.join("USER.md"), user)
+            .await
+            .map_err(|error| {
+                tracing::warn!(%error, "failed to write USER.md");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    // Read back the current state after writes
+    let updated = crate::identity::Identity::load(workspace).await;
+
+    Ok(Json(IdentityResponse {
+        soul: updated.soul,
+        identity: updated.identity,
+        user: updated.user,
+    }))
 }
 
 // -- Cortex events handlers --

@@ -50,7 +50,7 @@ Fly recommends one App per customer for isolation. Each user's app contains:
 ```
 fly-app: spacebot-{user_id}
   machine: spacebot-{user_id}-main
-    image: ghcr.io/jamiepine/spacebot:latest
+    image: ghcr.io/spacedriveapp/spacebot:latest
     size: shared-cpu-1x, 512MB RAM
     volume: /data (10GB default, expandable)
     auto_stop: off (always-on)
@@ -204,39 +204,18 @@ Volume storage beyond plan limits: $0.20/GB/mo. Automatic alerts at 80% capacity
 
 Single Dockerfile, multi-stage build:
 
-```dockerfile
-FROM rust:1.85-bookworm AS builder
-WORKDIR /build
-COPY . .
-RUN cargo build --release
+See the [Dockerfile](../Dockerfile) in the repo root. Two variants:
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y \
-    chromium \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+- `spacebot:slim` (~150MB) — minimal runtime, no browser
+- `spacebot:full` (~800MB) — includes Chromium for browser workers
 
-COPY --from=builder /build/target/release/spacebot /usr/local/bin/
-COPY prompts/ /opt/spacebot/prompts/
-
-ENV SPACEBOT_DIR=/data
-ENV CHROME_PATH=/usr/bin/chromium
-
-VOLUME /data
-EXPOSE 18789
-
-ENTRYPOINT ["spacebot", "start", "--foreground"]
-```
-
-Chrome is included for browser workers. The image is ~150-200MB (Rust binary + Chromium + minimal Debian).
-
-The `--foreground` flag is important — no daemonization inside a container. Logs go to stdout, container runtime handles lifecycle.
+The `--foreground` flag is important — no daemonization inside a container. Logs go to stdout, container runtime handles lifecycle. See [docker.md](docker.md) for full details.
 
 ### Image Updates
 
 When we push a new Spacebot version:
 
-1. Build and push to `ghcr.io/jamiepine/spacebot:latest`
+1. Build and push to `ghcr.io/spacedriveapp/spacebot:latest`
 2. Control plane rolls out updates to all machines (Fly's machine update API swaps the image)
 3. Machines restart with the new image, volume data persists
 4. Rolling update — process a batch at a time, skip machines that are currently handling active conversations

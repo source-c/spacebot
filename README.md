@@ -221,7 +221,7 @@ Compaction workers run alongside the channel without blocking it. Summaries stac
 
 ### The Cortex
 
-System-level observer. Generates a **memory bulletin** — a periodically refreshed, LLM-curated summary of the agent's knowledge injected into every channel's system prompt. Queries across multiple dimensions (identity, events, decisions, preferences), synthesizes into a ~500 word briefing. Replaces the static MEMORY.md approach with a dynamic, structured alternative.
+The agent's inner monologue. The only process that sees across all channels, workers, and branches simultaneously. Generates a **memory bulletin** — a periodically refreshed, LLM-curated briefing of the agent's knowledge injected into every conversation. Supervises running processes (kills hanging workers, cleans up stale branches). Maintains the memory graph (decay, pruning, merging near-duplicates, cross-channel consolidation). Detects patterns across conversations and creates observations. Also provides a direct interactive admin chat with full tool access for system inspection and manual intervention.
 
 ---
 
@@ -253,7 +253,7 @@ Channel context hits 80%
 | Branch    | LLM          | Memory recall, memory save, spawn workers | Fork of channel's context           |
 | Worker    | Pluggable    | Shell, file, exec, browser (configurable) | Fresh prompt + task description     |
 | Compactor | Programmatic | Monitor context, trigger workers          | N/A                                 |
-| Cortex    | LLM          | Memory recall, memory save                | Fresh per bulletin run              |
+| Cortex    | LLM + Programmatic | Memory, consolidation, system monitor | Entire agent scope              |
 
 ### Memory System
 
